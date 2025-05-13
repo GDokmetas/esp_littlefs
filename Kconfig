@@ -5,7 +5,14 @@ menu "LittleFS"
         default n
         help
             Toggle SD card support
-            This requires IDF v5+ as older ESP-IDF do not support SD card erase.
+            This requires IDF v5+ as older ESP-IDF do not support SD card erase.,
+
+    config LITTLEFS_EXT_FLASH_SUPPORT
+        bool "External flash support (requires ESP-IDF v5+)"
+        default n
+        help
+            Toggle external flash support
+            This requires IDF v5+ as older ESP-IDF do not support external flash erase.
 
     config LITTLEFS_MAX_PARTITIONS
         int "Maximum Number of Partitions"

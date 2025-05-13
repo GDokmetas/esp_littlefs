@@ -34,6 +34,10 @@
 #include <sdmmc_cmd.h>
 #endif
 
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+#include "esp_flash.h"
+#endif
+
 #include "spi_flash_mmap.h"
 
 #if CONFIG_IDF_TARGET_ESP32
@@ -136,6 +140,10 @@ static int esp_littlefs_file_sync(esp_littlefs_t *efs, vfs_littlefs_file_t *file
 
 #ifdef CONFIG_LITTLEFS_SDMMC_SUPPORT
 static esp_err_t esp_littlefs_by_sdmmc_handle(sdmmc_card_t *handle, int *index);
+#endif
+
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+static esp_err_t esp_littlefs_by_ext_flash_handle(esp_flash_t *handle, int *index);
 #endif
 
 static esp_err_t esp_littlefs_get_empty(int *index);
@@ -258,6 +266,18 @@ esp_err_t format_from_efs(esp_littlefs_t *efs)
     }
 #endif
 
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+    if (efs->ext_flash) {
+        esp_err_t ret = esp_flash_erase_chip(efs->ext_flash);
+        if (ret != ESP_OK) {
+            ESP_LOGE(ESP_LITTLEFS_TAG, "Failed to format external flash: 0x%x %s", ret, esp_err_to_name(ret));
+            return ret;
+        }
+
+        ESP_LOGI(ESP_LITTLEFS_TAG, "External flash formatted!");
+    }
+#endif 
+
     /* Format */
     {
         esp_err_t res = ESP_OK;
@@ -266,6 +286,11 @@ esp_err_t format_from_efs(esp_littlefs_t *efs)
         /* Need to write explicit block_count to cfg; but skip if it's the SD card */
 #ifdef CONFIG_LITTLEFS_SDMMC_SUPPORT
         if (efs->sdcard) {
+            res = lfs_format(efs->fs, &efs->cfg);
+        } else
+#endif
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+        if (efs->ext_flash) {
             res = lfs_format(efs->fs, &efs->cfg);
         } else
 #endif
@@ -340,6 +365,16 @@ bool esp_littlefs_sdmmc_mounted(sdmmc_card_t *sdcard)
 
     if(err != ESP_OK) return false;
     return _efs[index]->cache_size > 0;
+}
+#endif
+
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+bool esp_littlefs_ext_flash_mounted(esp_flash_t *ext_flash)
+{
+    int index;
+    esp_err_t err = esp_littlefs_by_ext_flash_handle(ext_flash, &index);
+    if(err != ESP_OK) return false;
+    return true;
 }
 #endif
 
@@ -500,6 +535,32 @@ esp_err_t esp_vfs_littlefs_unregister_sdmmc(sdmmc_card_t *sdcard)
 }
 #endif
 
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+esp_err_t esp_vfs_littlefs_unregister_ext_flash(esp_flash_t *ext_flash)
+{
+    assert(ext_flash);
+    int index;
+    if (esp_littlefs_by_ext_flash_handle(ext_flash, &index) != ESP_OK) {
+        ESP_LOGE(ESP_LITTLEFS_TAG, "Partition was never registered.");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGV(ESP_LITTLEFS_TAG, "Unregistering external flash \"%p\"", ext_flash);
+    esp_err_t err = esp_vfs_unregister(_efs[index]->base_path);
+    if (err != ESP_OK) {
+        ESP_LOGE(ESP_LITTLEFS_TAG, "Failed to unregister external flash \"%p\"", ext_flash);
+        return err;
+    }
+
+    esp_littlefs_free(&_efs[index]);
+    _efs[index] = NULL;
+    return ESP_OK;
+}
+#endif // CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+
+
+
+
 esp_err_t esp_vfs_littlefs_unregister_partition(const esp_partition_t* partition) {
     assert(partition);
     int index;
@@ -628,6 +689,45 @@ exit:
 }
 #endif
 
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+esp_err_t esp_littlefs_format_ext_flash(esp_flash_t *ext_flash)
+{
+    assert(ext_flash);
+
+    bool efs_free = false;
+    int index = -1;
+    esp_err_t err;
+
+    ESP_LOGV(ESP_LITTLEFS_TAG, "Formatting external flash %p", ext_flash);
+
+    /* Get a context */
+    err = esp_littlefs_by_ext_flash_handle(ext_flash, &index);
+
+    if( err != ESP_OK ){
+        /* Create a tmp context */
+        ESP_LOGV(ESP_LITTLEFS_TAG, "Temporarily creating EFS context.");
+        efs_free = true;
+        const esp_vfs_littlefs_conf_t conf = {
+                /* base_name not necessary for initializing */
+                .dont_mount = true,
+                .partition_label = NULL,
+                .partition = NULL,
+                .ext_flash = ext_flash,
+        };
+
+        err = esp_littlefs_init(&conf, &index);
+        if( err != ESP_OK ) {
+            ESP_LOGE(ESP_LITTLEFS_TAG, "Failed to initialize to format.");
+            goto exit;
+        }
+    }
+
+    err = format_from_efs(_efs[index]);
+exit:
+    if(efs_free && index>=0) esp_littlefs_free(&_efs[index]);
+    return err;
+}
+#endif // CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
 /********************
  * Static Functions *
  ********************/
@@ -850,6 +950,29 @@ static esp_err_t esp_littlefs_by_sdmmc_handle(sdmmc_card_t *handle, int *index)
 }
 #endif
 
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+static esp_err_t esp_littlefs_by_ext_flash_handle(esp_flash_t *handle, int *index)
+{
+    if(!handle || !index) return ESP_ERR_INVALID_ARG;
+
+    ESP_LOGV(ESP_LITTLEFS_TAG, "Searching for existing filesystem for ext flash handle %p", handle);
+
+    for (int i = 0; i < CONFIG_LITTLEFS_MAX_PARTITIONS; i++) {
+        esp_littlefs_t *p = _efs[i];
+        if (!p) continue;
+        if (!p->ext_flash) continue;
+        if (p->ext_flash == handle) {
+            *index = i;
+            ESP_LOGV(ESP_LITTLEFS_TAG, "Found existing filesystem %p at index %d", handle, *index);
+            return ESP_OK;
+        }
+    }
+
+    ESP_LOGV(ESP_LITTLEFS_TAG, "Existing filesystem %p not found", handle);
+    return ESP_ERR_NOT_FOUND;
+}
+#endif // CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+
 /**
  * @brief Get the index of an unallocated LittleFS slot.
  * @param[out] index Indexd of free LittleFS slot
@@ -970,6 +1093,69 @@ static esp_err_t esp_littlefs_init_sdcard(esp_littlefs_t** efs, sdmmc_card_t* sd
     return ESP_OK;
 }
 #endif // CONFIG_LITTLEFS_SDMMC_SUPPORT
+
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+
+static esp_err_t esp_littlefs_init_extflash(esp_littlefs_t** efs, esp_flash_t *ext_flash, bool read_only)
+{
+        /* Allocate Context */
+        *efs = esp_littlefs_calloc(1, sizeof(esp_littlefs_t));
+        if (*efs == NULL) {
+            ESP_LOGE(ESP_LITTLEFS_TAG, "esp_littlefs could not be malloced");
+            return ESP_ERR_NO_MEM;
+        }
+        (*efs)->ext_flash = ext_flash;
+    
+        { /* LittleFS Configuration */
+            (*efs)->cfg.context = *efs;
+            (*efs)->read_only = read_only;
+    
+            // block device operations
+            (*efs)->cfg.read  = littlefs_ext_flash_read;
+            (*efs)->cfg.prog  = littlefs_ext_flash_write;
+            (*efs)->cfg.erase = littlefs_ext_flash_erase;
+            (*efs)->cfg.sync  = littlefs_esp_ext_flash_sync;
+    
+            // block device configuration
+            uint32_t flash_size = 0;
+            esp_err_t f_err = esp_flash_get_physical_size(ext_flash, &flash_size);
+            ESP_ERROR_CHECK_WITHOUT_ABORT(f_err);
+            (*efs)->cfg.read_size = CONFIG_LITTLEFS_READ_SIZE;
+            (*efs)->cfg.prog_size = CONFIG_LITTLEFS_WRITE_SIZE;
+            (*efs)->cfg.block_size = CONFIG_LITTLEFS_BLOCK_SIZE;
+            (*efs)->cfg.block_count = flash_size / CONFIG_LITTLEFS_BLOCK_SIZE; // Autodetect ``block_count``
+            (*efs)->cfg.cache_size = CONFIG_LITTLEFS_CACHE_SIZE; // Must not be smaller than SD sector size
+            (*efs)->cfg.lookahead_size = CONFIG_LITTLEFS_LOOKAHEAD_SIZE;
+            (*efs)->cfg.block_cycles = CONFIG_LITTLEFS_BLOCK_CYCLES;
+    #if CONFIG_LITTLEFS_MULTIVERSION
+            #if CONFIG_LITTLEFS_DISK_VERSION_MOST_RECENT
+            (*efs)->cfg.disk_version = 0;
+    #elif CONFIG_LITTLEFS_DISK_VERSION_2_1
+            (*efs)->cfg.disk_version = 0x00020001;
+    #elif CONFIG_LITTLEFS_DISK_VERSION_2_0
+            (*efs)->cfg.disk_version = 0x00020000;
+    #else
+    #error "CONFIG_LITTLEFS_MULTIVERSION enabled but no or unknown disk version selected!"
+    #endif
+    #endif
+        }
+    
+        (*efs)->lock = xSemaphoreCreateRecursiveMutex();
+        if ((*efs)->lock == NULL) {
+            ESP_LOGE(ESP_LITTLEFS_TAG, "mutex lock could not be created");
+            return ESP_ERR_NO_MEM;
+        }
+    
+        (*efs)->fs = esp_littlefs_calloc(1, sizeof(lfs_t));
+        if ((*efs)->fs == NULL) {
+            ESP_LOGE(ESP_LITTLEFS_TAG, "littlefs could not be malloced");
+            return ESP_ERR_NO_MEM;
+        }
+    
+        return ESP_OK;
+}
+
+#endif 
 
 static esp_err_t esp_littlefs_init_efs(esp_littlefs_t** efs, const esp_partition_t* partition, bool read_only)
 {
@@ -1094,6 +1280,14 @@ static esp_err_t esp_littlefs_init(const esp_vfs_littlefs_conf_t* conf, int *ind
             goto exit;
         }
 #endif
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+    } else if (conf->ext_flash) {
+        ESP_LOGV(ESP_LITTLEFS_TAG, "Using external flash handle %p for LittleFS mount", conf->ext_flash);
+        if (!esp_flash_chip_driver_initialized(conf->ext_flash)) {
+            ESP_LOGE(ESP_LITTLEFS_TAG, "Failed when checking external flash status: 0x%x", err);
+            goto exit;
+        }
+#endif
     } else {
         // Find first partition with "littlefs" subtype.
         partition = esp_partition_find_first(
@@ -1107,10 +1301,17 @@ static esp_err_t esp_littlefs_init(const esp_vfs_littlefs_conf_t* conf, int *ind
             goto exit;
         }
     }
-
 #ifdef CONFIG_LITTLEFS_SDMMC_SUPPORT
 	if (conf->sdcard) {
         err = esp_littlefs_init_sdcard(&efs, conf->sdcard, conf->read_only);
+        if(err != ESP_OK) {
+            goto exit;
+        }
+    } else
+#endif
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+    if (conf->ext_flash) {
+        err = esp_littlefs_init_extflash(&efs, conf->ext_flash, conf->read_only);
         if(err != ESP_OK) {
             goto exit;
         }
@@ -1147,6 +1348,11 @@ static esp_err_t esp_littlefs_init(const esp_vfs_littlefs_conf_t* conf, int *ind
                 err = esp_littlefs_format_sdmmc(conf->sdcard);
             } else
 #endif
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+            if (conf->ext_flash) {
+                err = esp_littlefs_format_ext_flash(conf->ext_flash);
+            } else
+#endif
             {
                 err = esp_littlefs_format_partition(efs->partition);
             }
@@ -1166,11 +1372,18 @@ static esp_err_t esp_littlefs_init(const esp_vfs_littlefs_conf_t* conf, int *ind
         efs->cache = esp_littlefs_calloc(efs->cache_size, sizeof(*efs->cache));
 
         if(conf->grow_on_mount){
-#ifdef CONFIG_LITTLEFS_SDMMC_SUPPORT
+            #ifdef CONFIG_LITTLEFS_SDMMC_SUPPORT
             if (efs->sdcard) {
                 res = lfs_fs_grow(efs->fs, efs->sdcard->csd.capacity);
-            } else
-#endif
+            }
+            else
+        #endif
+        #ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+            if (efs->ext_flash) {
+                res = lfs_fs_grow(efs->fs, efs->ext_flash->size / efs->cfg.block_size);
+            }
+            else
+        #endif
             {
                 res = lfs_fs_grow(efs->fs, efs->partition->size / efs->cfg.block_size);
             }

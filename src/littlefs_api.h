@@ -15,6 +15,10 @@
 #include <sdmmc_cmd.h>
 #endif
 
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+#include "esp_flash.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -68,6 +72,10 @@ typedef struct {
 
 #ifdef CONFIG_LITTLEFS_SDMMC_SUPPORT
     sdmmc_card_t *sdcard;                     /*!< The SD card driver handle on which littlefs is located */
+#endif
+
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+    esp_flash_t *ext_flash;                   /*!< The external flash driver handle on which littlefs is located */
 #endif
 
     const esp_partition_t* partition;         /*!< The partition on which littlefs is located */
@@ -188,6 +196,13 @@ int littlefs_sdmmc_erase(const struct lfs_config *c, lfs_block_t block);
 int littlefs_sdmmc_sync(const struct lfs_config *c);
 
 #endif // CONFIG_LITTLEFS_SDMMC_SUPPORT
+
+#if CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+int littlefs_ext_flash_read(const struct lfs_config *c, lfs_block_t block, lfs_off_t off, void *buffer, lfs_size_t size);
+int littlefs_ext_flash_write(const struct lfs_config *c, lfs_block_t block, lfs_off_t off, const void *buffer, lfs_size_t size);
+int littlefs_ext_flash_erase(const struct lfs_config *c, lfs_block_t block);
+int littlefs_esp_ext_flash_sync(const struct lfs_config *c);
+#endif
 
 #ifdef __cplusplus
 }

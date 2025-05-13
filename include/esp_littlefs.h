@@ -10,6 +10,11 @@
 #include <sdmmc_cmd.h>
 #endif
 
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT    
+// TODO: Burada SPI FLASH driver eklenecek.
+#include "esp_flash.h"
+#endif 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,6 +44,10 @@ typedef struct {
 
 #ifdef CONFIG_LITTLEFS_SDMMC_SUPPORT
     sdmmc_card_t *sdcard;       /**< SD card handle to use if both esp_partition handle & partition label is NULL */
+#endif
+
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT  
+    esp_flash_t *ext_flash;   /**< SPI flash handle to use if both esp_partition handle & partition label is NULL */
 #endif
 
     uint8_t format_if_mount_failed:1; /**< Format the file system if it fails to mount. */
@@ -83,6 +92,10 @@ esp_err_t esp_vfs_littlefs_unregister(const char* partition_label);
  *          - ESP_ERR_INVALID_STATE already unregistered
  */
 esp_err_t esp_vfs_littlefs_unregister_sdmmc(sdmmc_card_t *sdcard);
+#endif
+
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+esp_err_t esp_vfs_littlefs_unregister_ext_flash(esp_flash_t *ext_flash);
 #endif
 
 /**
@@ -131,6 +144,11 @@ bool esp_littlefs_partition_mounted(const esp_partition_t* partition);
 bool esp_littlefs_sdmmc_mounted(sdmmc_card_t *sdcard);
 #endif
 
+
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+bool esp_littlefs_ext_flash_mounted(esp_flash_t *ext_flash);
+#endif
+
 /**
  * Format the littlefs partition
  *
@@ -161,6 +179,10 @@ esp_err_t esp_littlefs_format_partition(const esp_partition_t* partition);
  *          - ESP_FAIL    on error
  */
 esp_err_t esp_littlefs_format_sdmmc(sdmmc_card_t *sdcard);
+#endif
+
+#ifdef CONFIG_LITTLEFS_EXT_FLASH_SUPPORT
+esp_err_t esp_littlefs_format_ext_flash(esp_flash_t *ext_flash);
 #endif
 
 /**

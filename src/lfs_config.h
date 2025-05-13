@@ -6,7 +6,7 @@
  */
 #ifndef LFS_CFG_H
 #define LFS_CFG_H
-
+#define LFS_YES_TRACE
 // System includes
 #include <stdint.h>
 #include <stdbool.h>
@@ -49,7 +49,7 @@ extern const char ESP_LITTLEFS_TAG[];
 #ifndef LFS_TRACE
 #ifdef LFS_YES_TRACE
 #define LFS_TRACE_(fmt, ...) \
-    ESP_LOGV(ESP_LITTLEFS_TAG, "%s:%d:trace: " fmt "%s\n", __FILE__, __LINE__, __VA_ARGS__)
+    ESP_LOGI(ESP_LITTLEFS_TAG, "%s:%d:trace: " fmt "%s\n", __FILE__, __LINE__, __VA_ARGS__)
 #define LFS_TRACE(...) LFS_TRACE_(__VA_ARGS__, "")
 #else
 #define LFS_TRACE(...)
